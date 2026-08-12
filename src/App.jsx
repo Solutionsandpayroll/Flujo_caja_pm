@@ -14,14 +14,14 @@ function App() {
             <div className="logo-container">
               <div className="logo">
                 <img 
-                  src="/Logo syp.png" 
-                  alt="Solutions & Payroll Logo" 
+                  src="/pm_logo.png" 
+                  alt="Punto Medical Logo" 
                   width="60" 
                   height="60"
                 />
               </div>
               <div className="header-text">
-                <h1>Solutions & Payroll</h1>
+                <h1>Punto Medical</h1>
                 <p className="subtitle">Editor de Flujo de Caja</p>
               </div>
             </div>
