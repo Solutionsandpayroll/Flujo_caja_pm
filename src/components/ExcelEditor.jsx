@@ -1,7 +1,7 @@
 ﻿import { useState, useMemo, useEffect, useRef } from 'react'
 import * as XLSX from 'xlsx'
 import MonthViewer from './MonthViewer'
-import { isMonthSheet, monthSheetIndex, MONTHS, parseMonthSheet, excelDateToString, dateStringToSerial } from '../utils/excelParser'
+import { isMonthSheet, monthSheetIndex, MONTHS, parseMonthSheet, excelDateToString, dateStringToSerial, buildSubtotalEdits } from '../utils/excelParser'
 import { patchXlsx, cloneSheet, generarResumenXlsx, ensureAbonosSheet, ensureMapeoSheet } from '../utils/xlsxPatcher'
 import { saveHandle, loadHandle, clearHandle, requestPermission } from '../utils/fileHandleStore'
 import { syncFacturas, getMonthKey } from '../utils/sheetsSync'
@@ -532,7 +532,18 @@ function ExcelEditor() {
 
       const pendingIns = { [ABONOS_SHEET]: [insertion] }
       const sheetEdits = Object.keys(edits).length > 0 ? { [selectedSheet]: edits } : {}
-      const newBuf = await patchXlsx(buf, sheetEdits, pendingIns)
+      let newBuf = await patchXlsx(buf, sheetEdits, pendingIns)
+
+      // Recalcular subtotales
+      const wbCheck = XLSX.read(newBuf, { type: 'array' })
+      const rowsCheck = XLSX.utils.sheet_to_json(wbCheck.Sheets[selectedSheet], { header: 1, defval: '' })
+      const parsedCheck = parseMonthSheet(rowsCheck)
+      if (parsedCheck && parsedCheck.sectionCXP) {
+        const subEdits = buildSubtotalEdits(parsedCheck.sectionCXP)
+        if (Object.keys(subEdits).length > 0) {
+          newBuf = await patchXlsx(newBuf, { [selectedSheet]: subEdits }, {})
+        }
+      }
 
       const handle = fileHandleRef.current
       if (handle) {
@@ -728,7 +739,27 @@ function ExcelEditor() {
     setSaveStatus('saving')
     setError('')
     try {
-      const buf = await patchXlsx(rawBuffer, pendingEdits, pendingInsertions)
+      let buf = await patchXlsx(rawBuffer, pendingEdits, pendingInsertions)
+
+      // Actualizar fórmulas de subtotales en subsecciones CXP
+      const monthSheets = Object.keys({ ...pendingEdits, ...pendingInsertions })
+      const formulaEdits = {}
+      for (const sheet of monthSheets) {
+        if (!isMonthSheet(sheet)) continue
+        const wbTemp = XLSX.read(buf, { type: 'array' })
+        const rows = XLSX.utils.sheet_to_json(wbTemp.Sheets[sheet], { header: 1, defval: '' })
+        const parsed = parseMonthSheet(rows)
+        if (parsed && parsed.sectionCXP) {
+          const subEdits = buildSubtotalEdits(parsed.sectionCXP)
+          if (Object.keys(subEdits).length > 0) {
+            formulaEdits[sheet] = subEdits
+          }
+        }
+      }
+      if (Object.keys(formulaEdits).length > 0) {
+        buf = await patchXlsx(buf, formulaEdits, {})
+      }
+
       const writable = await fileHandle.createWritable()
       await writable.write(buf)
       await writable.close()

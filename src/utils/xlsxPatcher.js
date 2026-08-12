@@ -309,13 +309,21 @@ function dateStringToSerial(str) {
  * Preserva todos los atributos originales (s, r, etc.) salvo t.
  */
 function buildCellXml(openTag, value) {
-  // Extraer atributos: quitar < c inicial, > final y atributo t si existe
   let attrs = openTag
     .replace(/^<c\s*/, '')
     .replace(/>$/, '')
     .replace(/\bt="[^"]*"/, '')
     .replace(/\s+/g, ' ')
     .trim()
+
+  // Fórmula: valor que empieza con =
+  if (typeof value === 'string' && value.startsWith('=')) {
+    const escapedFormula = value.slice(1)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+    return `<c ${attrs}><f>${escapedFormula}</f><v></v></c>`
+  }
 
   if (typeof value === 'number') {
     return `<c ${attrs}><v>${value}</v></c>`

@@ -221,10 +221,13 @@ function parseCXPSection(rows, offset = 0) {
     if (isHeader) {
       // Saltar TOTAL EGRESOS y SALDO
       const titleUp = c3.toUpperCase()
-      if (titleUp === 'TOTAL EGRESOS' || titleUp === 'SALDO') continue
+      if (titleUp === 'TOTAL EGRESOS' || titleUp === 'SALDO') {
+        current = null // dejar de agregar filas a la subsección anterior
+        continue
+      }
       // Parar si ya terminamos con IMPREVISTO (última subsección válida)
       if (current && current.title.toUpperCase().startsWith('IMPREVISTO')) break
-      current = { title: c3, total: row[4], rows: [] }
+      current = { title: c3, total: row[4], rows: [], _row: offset + i }
       subsections.push(current)
     } else if (current) {
       // Fila de datos: el estado viene de col G, fallback a col A
@@ -242,4 +245,19 @@ function parseCXPSection(rows, offset = 0) {
   }
 
   return subsections
+}
+
+/**
+ * Genera edits para actualizar los valores de subtotal en cada subsección CXP.
+ * @returns {Object} { "row,col": numericValue }
+ */
+export function buildSubtotalEdits(sectionCXP) {
+  const edits = {}
+  if (!sectionCXP) return edits
+  for (const sub of sectionCXP) {
+    if (sub.rows.length === 0) continue
+    const total = sub.rows.reduce((sum, r) => sum + (typeof r.valor === 'number' ? r.valor : 0), 0)
+    edits[`${sub._row},4`] = total
+  }
+  return edits
 }
