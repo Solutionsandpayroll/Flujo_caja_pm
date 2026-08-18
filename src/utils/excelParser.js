@@ -232,6 +232,12 @@ function parseCXPSection(rows, offset = 0) {
     } else if (current) {
       // Fila de datos: el estado viene de col G, fallback a col A
       const estado = s(row[6]) || s(row[0])
+      let fechaVencimiento = ''
+      if (typeof row[5] === 'number') {
+        fechaVencimiento = excelDateToString(row[5])
+      } else if (typeof row[5] === 'string' && row[5]) {
+        fechaVencimiento = row[5]
+      }
       current.rows.push({
         _row:             offset + i,
         estado,
@@ -239,7 +245,8 @@ function parseCXPSection(rows, offset = 0) {
         factura:          c2,
         proveedor:        c3,
         valor:            typeof row[4] === 'number' ? row[4] : null,
-        fechaVencimiento: typeof row[5] === 'number' ? excelDateToString(row[5]) : ''
+        fechaVencimiento,
+        observaciones:    s(row[10])
       })
     }
   }

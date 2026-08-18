@@ -8,7 +8,7 @@ import SectionCXP from './SectionCXP'
  * Recibe las filas crudas de una hoja de mes y renderiza
  * las dos secciones estructuradas: Inicial y Cuentas x Pagar.
  */
-function MonthViewer({ rows, sheetName, edits, onCellEdit, insertions, onAddRow, onInsertedRowEdit, onDeleteInsertedRow, abonos, onOpenAbono }) {
+function MonthViewer({ rows, sheetName, edits, onCellEdit, insertions, onAddRow, onInsertedRowEdit, onDeleteInsertedRow, abonos, onOpenAbono, onAddSubsection }) {
   const parsed = useMemo(() => parseMonthSheet(rows), [rows])
 
   if (!parsed) {
@@ -59,6 +59,7 @@ function MonthViewer({ rows, sheetName, edits, onCellEdit, insertions, onAddRow,
           onDeleteInsertedRow={onDeleteInsertedRow}
           abonos={abonos}
           onOpenAbono={onOpenAbono}
+          onAddSubsection={onAddSubsection}
         />
       )}
     </div>

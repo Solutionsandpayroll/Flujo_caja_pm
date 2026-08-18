@@ -45,6 +45,7 @@ function ExcelEditor() {
   const [lastMonthSheet, setLastMonthSheet] = useState('')
   const [mapeoDescuentos, setMapeoDescuentos] = useState({})
   const [canceladoModal, setCanceladoModal] = useState(null) // { rowIdx, colIdx, onSave }
+  const [nuevaSubseccionModal, setNuevaSubseccionModal] = useState(false)
   const rawBufferRef = useRef(null)
   const fileHandleRef = useRef(null)
   const abonosRef = useRef({}) // { proveedor, valorOriginal } // { sinMapeo: [{nombre, valor, fecha}], onConfirm: fn }
@@ -707,6 +708,33 @@ function ExcelEditor() {
 
   const handleInsertedRowEdit = (id, colIdx, value) => {
     if (!activeSlot) return
+    
+    // Si cambia estado a Cancelado, pedir método de pago
+    if (colIdx === 6 && String(value).toLowerCase() === 'cancelado') {
+      setCanceladoModal({
+        rowIdx: null,
+        colIdx,
+        value,
+        insertionId: id,
+        onSave: (metodo) => {
+          setCanceladoModal(null)
+          setSlots(prev => {
+            const s = prev[activeSlot]
+            return { ...prev, [activeSlot]: { ...s,
+              pendingInsertions: { ...s.pendingInsertions,
+                [selectedSheet]: (s.pendingInsertions[selectedSheet] || []).map(ins =>
+                  ins.id === id
+                    ? { ...ins, cells: { ...ins.cells, 6: value, 10: metodo } }
+                    : ins
+                )
+              }
+            }}
+          })
+        }
+      })
+      return
+    }
+    
     setSlots(prev => {
       const s = prev[activeSlot]
       return { ...prev, [activeSlot]: { ...s,
@@ -729,6 +757,37 @@ function ExcelEditor() {
         }
       }}
     })
+  }
+
+  const handleAddSubsection = (nombre) => {
+    if (!activeSlot || !workbook || !selectedSheet) return
+    const rows = XLSX.utils.sheet_to_json(workbook.Sheets[selectedSheet], { header: 1, defval: '' })
+    const parsed = parseMonthSheet(rows)
+    if (!parsed || !parsed.sectionCXP || parsed.sectionCXP.length === 0) return
+
+    const lastSubsection = parsed.sectionCXP[parsed.sectionCXP.length - 1]
+    const lastRow = lastSubsection.rows.length > 0
+      ? lastSubsection.rows[lastSubsection.rows.length - 1]._row
+      : lastSubsection._row
+
+    const id = `subsec-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
+    const nombreUpper = nombre.toUpperCase()
+
+    setSlots(prev => {
+      const s = prev[activeSlot]
+      return { ...prev, [activeSlot]: { ...s,
+        pendingInsertions: { ...s.pendingInsertions,
+          [selectedSheet]: [...(s.pendingInsertions[selectedSheet] || []), {
+            id,
+            insertAfterRow: lastRow,
+            cells: { 3: nombreUpper, 4: 0 },
+            sectionKey: `cxp:${nombreUpper}`,
+            isSubsection: true
+          }]
+        }
+      }}
+    })
+    setNuevaSubseccionModal(false)
   }
 
   // ──────────────────────────────────────────────
@@ -1036,6 +1095,7 @@ function ExcelEditor() {
               onDeleteInsertedRow={handleDeleteInsertedRow}
               abonos={abonos}
               onOpenAbono={handleOpenAbonoModal}
+              onAddSubsection={() => setNuevaSubseccionModal(true)}
             />
           )}
 
@@ -1071,6 +1131,13 @@ function ExcelEditor() {
         <CanceladoModal
           onConfirm={(metodo) => canceladoModal.onSave(metodo)}
           onCancel={() => setCanceladoModal(null)}
+        />
+      )}
+
+      {nuevaSubseccionModal && (
+        <NuevaSubseccionModal
+          onConfirm={handleAddSubsection}
+          onCancel={() => setNuevaSubseccionModal(false)}
         />
       )}
     </div>
@@ -1199,24 +1266,56 @@ function AbonosPanel({ abonos, sheetName, onOpenAbono }) {
 
 function CanceladoModal({ onConfirm, onCancel }) {
   const [metodo, setMetodo] = useState('')
+  const metodos = ['Efectivo', 'Transferencia', 'Cruce de cuentas', 'Tarjeta de crédito']
 
   return (
     <div className="modal-overlay" onClick={onCancel}>
       <div className="modal-content modal-cancelado" onClick={e => e.stopPropagation()}>
         <h3>Método de Pago</h3>
-        <p>¿Cómo se realizó el pago? (Efectivo, Transferencia, etc.)</p>
-        <input
-          type="text"
+        <p>¿Cómo se realizó el pago?</p>
+        <select
           className="cancelado-input"
-          placeholder="Ej: Efectivo, Transferencia Bancolombia..."
           value={metodo}
           onChange={e => setMetodo(e.target.value)}
           autoFocus
-          onKeyDown={e => { if (e.key === 'Enter' && metodo.trim()) onConfirm(metodo.trim()) }}
+        >
+          <option value="">Selecciona un método de pago</option>
+          {metodos.map(m => <option key={m} value={m}>{m}</option>)}
+        </select>
+        <div className="modal-footer">
+          <button className="btn-toolbar btn-discard" onClick={onCancel}>Cancelar</button>
+          <button className="btn-toolbar btn-save" onClick={() => onConfirm(metodo)} disabled={!metodo}>Guardar</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function NuevaSubseccionModal({ onConfirm, onCancel }) {
+  const [nombre, setNombre] = useState('')
+
+  const handleConfirm = () => {
+    if (!nombre.trim()) return
+    onConfirm(nombre.trim())
+  }
+
+  return (
+    <div className="modal-overlay" onClick={onCancel}>
+      <div className="modal-content modal-nueva-subseccion" onClick={e => e.stopPropagation()}>
+        <h3>Nueva Subsección</h3>
+        <p>Ingresa el nombre de la nueva subsección:</p>
+        <input
+          type="text"
+          className="subseccion-input"
+          placeholder="Ej: GASTOS OPERATIVOS"
+          value={nombre}
+          onChange={e => setNombre(e.target.value)}
+          autoFocus
+          onKeyDown={e => { if (e.key === 'Enter' && nombre.trim()) handleConfirm() }}
         />
         <div className="modal-footer">
           <button className="btn-toolbar btn-discard" onClick={onCancel}>Cancelar</button>
-          <button className="btn-toolbar btn-save" onClick={() => onConfirm(metodo.trim())} disabled={!metodo.trim()}>Guardar</button>
+          <button className="btn-toolbar btn-save" onClick={handleConfirm} disabled={!nombre.trim()}>Crear</button>
         </div>
       </div>
     </div>

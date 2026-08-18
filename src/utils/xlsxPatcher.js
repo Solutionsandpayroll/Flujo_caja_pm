@@ -131,8 +131,9 @@ function getRowXml(xml, rowNum) {
  * @param {number}      rowNum         Número de fila 1-based.
  * @param {Object}      cells          { colIdx0based: value }
  * @param {string|null} templateRowXml XML de la fila plantilla para copiar estilos numéricos.
+ * @param {boolean}     isSubsection   Si es true, no copia estilos de la plantilla
  */
-function buildNewRowXml(rowNum, cells, templateRowXml) {
+function buildNewRowXml(rowNum, cells, templateRowXml, isSubsection = false) {
   // numericStyleMap: col letter → s= style id  (celdas numéricas sin fórmula)
   // formulaCellMap:  col letter → { style, formula }  (celdas con <f>)
   //
@@ -143,7 +144,7 @@ function buildNewRowXml(rowNum, cells, templateRowXml) {
   const formulaCellMap  = {}
   const templateRowNum  = rowNum - 1    // fila plantilla (1-based)
 
-  if (templateRowXml) {
+  if (templateRowXml && !isSubsection) {
     const process = (attrs, content = '') => {
       const colM = /\br="([A-Z]+)\d+"/.exec(attrs)
       const sM   = /\bs="(\d+)"/.exec(attrs)
@@ -187,7 +188,8 @@ function buildNewRowXml(rowNum, cells, templateRowXml) {
     const colIdx    = Number(colIdxStr)
     const col       = colLetter(colIdx)
     const ref       = `${col}${rowNum}`
-    const isNumeric = typeof value === 'number' || dateStringToSerial(String(value)) !== null
+    // Solo tratar como numérico si es un número real (no fechas en formato string)
+    const isNumeric = typeof value === 'number'
     const sAttr     = isNumeric && numericStyleMap[col] ? ` s="${numericStyleMap[col]}"` : ''
     cellParts[colIdx] = buildCellXml(`<c r="${ref}"${sAttr}>`, value)
   }
@@ -273,18 +275,57 @@ function renumberAfter(xml, afterRow, inc) {
  * Inserta nuevas filas en el XML de una hoja.
  * @param {string} xml
  * @param {Array}  insertions  [{ insertAfterRow (0-based), cells: { colIdx: value } }]
+ * @param {string} boldStyleId ID del estilo de negrita a aplicar
  */
-function insertRowsInSheetXml(xml, insertions) {
+function insertRowsInSheetXml(xml, insertions, boldStyleId) {
   if (!insertions || insertions.length === 0) return xml
   const sorted = [...insertions].sort((a, b) => a.insertAfterRow - b.insertAfterRow)
   let offset = 0
   for (const ins of sorted) {
     const targetXmlRow = ins.insertAfterRow + 1 + offset   // convertir a 1-based + offset acumulado
-    const templateXml  = getRowXml(xml, targetXmlRow)
+    let templateXml  = getRowXml(xml, targetXmlRow)
+    
+    // Detectar si es una fila de encabezado de subsección (tiene flag isSubsection)
+    const isSubsectionHeader = ins.isSubsection === true
+    
+    // Si es un registro normal, asegurarse de que la plantilla NO sea una subsección
+    if (!isSubsectionHeader && templateXml) {
+      // Verificar si la plantilla es una subsección
+      const isTemplateSubsection = boldStyleId 
+        ? hasStyleInColumnD(templateXml, boldStyleId)
+        : isSubsectionHeaderRow(templateXml)
+      
+      if (isTemplateSubsection) {
+        // Buscar una fila de datos normal como plantilla
+        const dataRowXml = findDataRowWithNumericStyle(xml)
+        if (dataRowXml) templateXml = dataRowXml
+      }
+    }
+    
+    // Si la fila plantilla no tiene estilo numérico en columna E, buscar una fila con datos
+    if (templateXml && !hasNumericStyleInColumnE(templateXml)) {
+      const dataRowXml = findDataRowWithNumericStyle(xml)
+      if (dataRowXml) templateXml = dataRowXml
+    }
+    
     const endIdx       = findRowEnd(xml, targetXmlRow)
     if (endIdx === -1) continue                            // fila no encontrada, saltar
     const newRowNum = targetXmlRow + 1
-    const newRowXml = '\n    ' + buildNewRowXml(newRowNum, ins.cells, templateXml)
+    
+    let newRowXml = '\n    ' + buildNewRowXml(newRowNum, ins.cells, templateXml, isSubsectionHeader)
+    
+    // Si es encabezado de subsección, aplicar negrita y tamaño 12 a las celdas D y E
+    if (isSubsectionHeader && boldStyleId) {
+      // Buscar el estilo numérico de contabilidad de una fila de datos normal
+      const numericStyleId = getNumericStyleIdFromDataRow(xml)
+      if (numericStyleId) {
+        // Aplicar negrita a D y el estilo numérico a E
+        newRowXml = applyStyles(newRowXml, { D: boldStyleId, E: numericStyleId })
+      } else {
+        newRowXml = applyStyles(newRowXml, { D: boldStyleId, E: boldStyleId })
+      }
+    }
+    
     // Renumerar sufijo (filas > targetXmlRow) antes de insertar para mantener orden
     const prefix        = xml.slice(0, endIdx)
     const renamedSuffix = renumberAfter(xml.slice(endIdx), targetXmlRow, 1)
@@ -292,6 +333,169 @@ function insertRowsInSheetXml(xml, insertions) {
     offset++
   }
   return xml
+}
+
+/**
+ * Busca el ID de estilo numérico de la columna E en una fila de datos normal.
+ */
+function getNumericStyleIdFromDataRow(xml) {
+  const dataRow = findDataRowWithNumericStyle(xml)
+  if (!dataRow) return null
+  
+  const eCellRegex = /<c\s+r="E\d+"([^>]*)>/
+  const match = eCellRegex.exec(dataRow)
+  if (!match) return null
+  
+  const attrs = match[1]
+  const sMatch = /\bs="(\d+)"/.exec(attrs)
+  return sMatch ? sMatch[1] : null
+}
+
+/**
+ * Verifica si una fila es un encabezado de subsección (texto en mayúsculas en columna D).
+ */
+function isSubsectionHeaderRow(rowXml) {
+  const dCellRegex = /<c\s+r="D\d+"[^>]*>([\s\S]*?)<\/c>/
+  const dMatch = dCellRegex.exec(rowXml)
+  if (!dMatch) return false
+  
+  const dContent = dMatch[1]
+  const textMatch = /<t>([^<]+)<\/t>/.exec(dContent)
+  if (!textMatch) return false
+  
+  const text = textMatch[1]
+  // Si el texto está en mayúsculas y es corto, es un encabezado de subsección
+  return text === text.toUpperCase() && /[A-ZÁÉÍÓÚÑÜ]/.test(text) && text.length < 50
+}
+
+/**
+ * Verifica si una fila tiene un estilo específico en la columna D.
+ */
+function hasStyleInColumnD(rowXml, styleId) {
+  const dCellRegex = /<c\s+r="D\d+"([^>]*)>/
+  const match = dCellRegex.exec(rowXml)
+  if (!match) return false
+  const attrs = match[1]
+  const sMatch = /\bs="(\d+)"/.exec(attrs)
+  return sMatch && sMatch[1] === styleId
+}
+
+/**
+ * Crea un estilo con negrita y tamaño 12 en el archivo styles.xml.
+ * Retorna el ID del nuevo estilo.
+ */
+async function createBoldStyle12(zip) {
+  const stylesFile = zip.file('xl/styles.xml')
+  if (!stylesFile) return null
+  
+  let stylesXml = await stylesFile.async('string')
+  
+  // Buscar la sección fonts y contar cuántos fonts hay
+  const fontsSectionMatch = stylesXml.match(/<fonts[^>]*>([\s\S]*?)<\/fonts>/)
+  if (!fontsSectionMatch) return null
+  
+  const fontsSection = fontsSectionMatch[1]
+  const fontCount = (fontsSection.match(/<font>/g) || []).length
+  const newFontId = fontCount // El nuevo font tendrá este ID (0-based)
+  
+  // Buscar el último xf ID en cellXfs
+  const xfIdMatch = stylesXml.match(/<cellXfs[^>]*>([\s\S]*?)<\/cellXfs>/)
+  if (!xfIdMatch) return null
+  
+  const cellXfsContent = xfIdMatch[1]
+  const xfCount = (cellXfsContent.match(/<xf\b/g) || []).length
+  const newXfId = xfCount // El nuevo xf tendrá este ID (0-based)
+  
+  // Crear nuevo font con negrita y tamaño 12
+  const newFont = `<font><b/><sz val="12"/><name val="Calibri"/><family val="2"/></font>`
+  
+  // Insertar nuevo font antes de </fonts>
+  stylesXml = stylesXml.replace('</fonts>', newFont + '</fonts>')
+  
+  // Actualizar count en fonts
+  stylesXml = stylesXml.replace(/<fonts count="(\d+)"/, (match, count) => `<fonts count="${parseInt(count) + 1}"`)
+  
+  // Insertar nuevo xf en cellXfs (usando fillId="0" que es el fill por defecto)
+  const newXf = `<xf numFmtId="0" fontId="${newFontId}" fillId="0" borderId="0" xfId="0" applyFont="1" applyNumberFormat="1"/>`
+  stylesXml = stylesXml.replace('</cellXfs>', newXf + '</cellXfs>')
+  
+  // Actualizar count en cellXfs
+  stylesXml = stylesXml.replace(/<cellXfs count="(\d+)"/, (match, count) => `<cellXfs count="${parseInt(count) + 1}"`)
+  
+  // Guardar styles.xml modificado
+  zip.file('xl/styles.xml', stylesXml)
+  
+  return newXfId.toString()
+}
+
+/**
+ * Aplica estilos específicos a celdas en una fila XML.
+ */
+function applyStyles(rowXml, styles) {
+  let result = rowXml
+  for (const [col, styleId] of Object.entries(styles)) {
+    const cellRegex = new RegExp(`(<c\\s+r="${col}\\d+")([^>]*)(>)`, 'g')
+    result = result.replace(cellRegex, (match, open, attrs, close) => {
+      if (/\bs="(\d+)"/.test(attrs)) {
+        attrs = attrs.replace(/\bs="(\d+)"/, `s="${styleId}"`)
+      } else {
+        attrs = ` s="${styleId}"` + attrs
+      }
+      return open + attrs + close
+    })
+  }
+  return result
+}
+
+/**
+ * Verifica si el XML de una fila tiene estilo numérico en la columna E.
+ */
+function hasNumericStyleInColumnE(rowXml) {
+  const eCellRegex = /<c\s+r="E\d+"([^>]*)>/
+  const match = eCellRegex.exec(rowXml)
+  if (!match) return false
+  const attrs = match[1]
+  
+  if (!/\bs="(\d+)"/.test(attrs)) return false
+  
+  const tMatch = /\bt="([^"]+)"/.exec(attrs)
+  if (tMatch && (tMatch[1] === 'inlineStr' || tMatch[1] === 's')) return false
+  
+  return true
+}
+
+/**
+ * Busca una fila con datos que tenga estilo numérico en columna E.
+ * Excluye filas que son encabezados de subsección (texto en mayúsculas en columna D).
+ */
+function findDataRowWithNumericStyle(xml) {
+  const rowRegex = /<row\s+r="(\d+)"[^>]*>([\s\S]*?)<\/row>/g
+  let match
+  while ((match = rowRegex.exec(xml)) !== null) {
+    const rowXml = match[0]
+    
+    // Verificar que tenga estilo numérico en columna E
+    if (!hasNumericStyleInColumnE(rowXml)) continue
+    
+    // Excluir si es un encabezado de subsección (texto en mayúsculas en columna D)
+    const dCellRegex = /<c\s+r="D\d+"[^>]*>([\s\S]*?)<\/c>/
+    const dMatch = dCellRegex.exec(rowXml)
+    if (dMatch) {
+      const dContent = dMatch[1]
+      // Buscar texto en la celda D
+      const textMatch = /<t>([^<]+)<\/t>/.exec(dContent)
+      if (textMatch) {
+        const text = textMatch[1]
+        // Si el texto está en mayúsculas y es corto, probablemente es un encabezado
+        if (text === text.toUpperCase() && /[A-ZÁÉÍÓÚÑÜ]/.test(text) && text.length < 50) {
+          continue // Saltar esta fila, es un encabezado
+        }
+      }
+    }
+    
+    return rowXml
+  }
+  return null
 }
 
 /** Intenta convertir "dd/mm/yyyy" a serial de Excel. */
@@ -329,10 +533,14 @@ function buildCellXml(openTag, value) {
     return `<c ${attrs}><v>${value}</v></c>`
   }
 
-  // Si parece una fecha "dd/mm/yyyy", convertir a serial (preserva formato de fecha de la celda)
-  const serial = dateStringToSerial(String(value))
-  if (serial) {
-    return `<c ${attrs}><v>${serial}</v></c>`
+  // Si es una fecha "dd/mm/yyyy", guardar como texto para que se vea bien
+  const isDate = /^(\d{2})\/(\d{2})\/(\d{4})$/.test(String(value))
+  if (isDate) {
+    const escaped = String(value)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+    return `<c ${attrs} t="inlineStr"><is><t>${escaped}</t></is></c>`
   }
 
   // Texto plano → inline string (Excel acepta este formato; no requiere tocar sharedStrings.xml)
@@ -345,6 +553,7 @@ function buildCellXml(openTag, value) {
 
 /**
  * Encuentra y reemplaza la celda `cellRef` en el XML de la hoja.
+ * Si la celda no existe, la crea.
  *
  * Estrategia robusta en dos pasos:
  * 1. Localizar el atributo r="cellRef" en el XML.
@@ -361,7 +570,10 @@ function patchCell(xml, cellRef, value) {
 
   while (true) {
     const attrIdx = xml.indexOf(needle, searchFrom)
-    if (attrIdx === -1) return xml   // celda no encontrada
+    if (attrIdx === -1) {
+      // Celda no encontrada, crearla
+      return createCell(xml, cellRef, value)
+    }
 
     // Retroceder hasta el > del elemento anterior, lo que sigue debe ser <c
     const prevGt  = xml.lastIndexOf('>', attrIdx)
@@ -396,6 +608,54 @@ function patchCell(xml, cellRef, value) {
       return xml.slice(0, tagStart) + newCell + xml.slice(closeIdx + 4)
     }
   }
+}
+
+/**
+ * Crea una nueva celda en la fila especificada.
+ * La celda se inserta en la posición correcta según el orden de columnas.
+ */
+function createCell(xml, cellRef, value) {
+  // Extraer el número de fila y la letra de columna
+  const match = /^([A-Z]+)(\d+)$/.exec(cellRef)
+  if (!match) return xml
+  
+  const col = match[1]
+  const rowNum = match[2]
+  const colIndex = colLetterToIndex(col)
+  
+  // Buscar la fila
+  const rowRegex = new RegExp(`<row\\s+r="${rowNum}"[^>]*>([\\s\\S]*?)</row>`)
+  const rowMatch = rowRegex.exec(xml)
+  if (!rowMatch) return xml  // Fila no encontrada
+  
+  const rowContent = rowMatch[1]
+  const rowStart = rowMatch.index
+  
+  // Construir la nueva celda
+  const newCell = buildCellXml(`<c r="${cellRef}">`, value)
+  
+  // Encontrar la posición correcta para insertar la celda (ordenada por columna)
+  // Buscar todas las celdas existentes en la fila
+  const cellRegex = /<c\s+r="([A-Z]+)\d+"[^>]*(?:\/>|>[\s\S]*?<\/c>)/g
+  let cellMatch
+  let insertPos = rowStart + rowMatch[0].length - 6  // Por defecto, antes de </row>
+  
+  while ((cellMatch = cellRegex.exec(rowContent)) !== null) {
+    const existingCol = cellMatch[1]
+    const existingColIndex = colLetterToIndex(existingCol)
+    
+    if (existingColIndex >= colIndex) {
+      // Esta celda va después o es la misma, insertar antes de ella
+      // cellMatch.index es la posición en rowContent
+      // Necesitamos calcular la posición en xml
+      const contentStart = rowStart + rowMatch[0].indexOf('>') + 1
+      insertPos = contentStart + cellMatch.index
+      break
+    }
+  }
+  
+  // Insertar la nueva celda
+  return xml.slice(0, insertPos) + newCell + xml.slice(insertPos)
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -450,6 +710,17 @@ export async function patchXlsx(rawBuffer, pendingEdits, pendingInsertions = {})
     ...Object.keys(pendingInsertions).filter(k => (pendingInsertions[k] || []).length > 0)
   ])
 
+  // Verificar si hay inserciones de subsecciones para crear el estilo de negrita
+  let boldStyleId = null
+  for (const sheetName of allSheets) {
+    const insertions = pendingInsertions[sheetName] || []
+    const hasSubsectionInsertions = insertions.some(ins => ins.isSubsection === true)
+    if (hasSubsectionInsertions) {
+      boldStyleId = await createBoldStyle12(zip)
+      break
+    }
+  }
+
   for (const sheetName of allSheets) {
     const sheetFile = sheetFileMap[sheetName]
     if (!sheetFile) continue
@@ -461,7 +732,7 @@ export async function patchXlsx(rawBuffer, pendingEdits, pendingInsertions = {})
     // 1. Insertar nuevas filas (modifica números de fila del XML)
     const insertions = pendingInsertions[sheetName] || []
     if (insertions.length > 0) {
-      xml = insertRowsInSheetXml(xml, insertions)
+      xml = insertRowsInSheetXml(xml, insertions, boldStyleId)
     }
 
     // 2. Parchear celdas existentes, ajustando índices de fila por las inserciones previas
