@@ -2122,6 +2122,14 @@ input:focus-visible {
   box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.12);
 }
 
+.filter-search-factura {
+  width: 160px;
+}
+
+.filter-fecha {
+  width: 150px;
+}
+
 .filter-clear {
   position: absolute;
   right: 0.5rem;
@@ -2803,4 +2811,105 @@ input:focus-visible {
   .td-desc {
     max-width: 200px;
   }
+}
+
+/* ─── Sheet Selector Modal ─── */
+
+.modal-sheet-selector {
+  max-width: 520px;
+  text-align: left;
+  padding: 2rem;
+}
+
+.modal-sheet-selector .modal-header h3 {
+  font-size: 1.35rem;
+  margin-bottom: 0.5rem;
+}
+
+.modal-sheet-selector .modal-header p {
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+  margin-bottom: 0.25rem;
+}
+
+.modal-sheet-selector .modal-subtitle {
+  font-size: 0.85rem !important;
+  color: var(--secondary) !important;
+  margin-top: 0.5rem !important;
+}
+
+.sheet-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0.75rem;
+  margin-bottom: 1.5rem;
+}
+
+.sheet-grid-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem 0.5rem;
+  border: 2px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  min-height: 70px;
+}
+
+.sheet-grid-item:hover {
+  border-color: var(--primary-light);
+  background: rgba(30, 58, 138, 0.04);
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-sm);
+}
+
+.sheet-grid-item.selected {
+  border-color: var(--primary);
+  background: rgba(30, 58, 138, 0.08);
+  box-shadow: 0 0 0 3px rgba(30, 58, 138, 0.15);
+}
+
+.sheet-grid-month {
+  font-weight: 700;
+  font-size: 0.95rem;
+  color: var(--text-primary);
+  text-transform: capitalize;
+}
+
+.sheet-grid-item.selected .sheet-grid-month {
+  color: var(--primary);
+}
+
+.sheet-grid-full {
+  font-size: 0.7rem;
+  color: var(--text-secondary);
+  margin-top: 2px;
+}
+
+.sheet-grid-empty {
+  text-align: center;
+  padding: 2rem 1rem;
+  color: var(--text-secondary);
+}
+
+.sheet-grid-empty-hint {
+  font-size: 0.85rem;
+  margin-top: 0.5rem;
+  color: var(--secondary);
+}
+
+.modal-sheet-selector .modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 1.5rem;
+}
+
+.modal-sheet-selector .modal-footer .btn-save {
+  width: 100%;
+  justify-content: center;
+  padding: 0.875rem;
+  font-size: 1rem;
 }

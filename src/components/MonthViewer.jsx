@@ -35,18 +35,6 @@ function MonthViewer({ rows, sheetName, edits, onCellEdit, insertions, onAddRow,
 
   return (
     <div className="month-viewer">
-      {hasInitial && (
-        <SectionInitial
-          data={sectionInitial}
-          sheetName={sheetName}
-          edits={edits}
-          onCellEdit={onCellEdit}
-          insertions={insertions}
-          onAddRow={onAddRow}
-          onInsertedRowEdit={onInsertedRowEdit}
-          onDeleteInsertedRow={onDeleteInsertedRow}
-        />
-      )}
       {hasCXP && (
         <SectionCXP
           subsections={sectionCXP}

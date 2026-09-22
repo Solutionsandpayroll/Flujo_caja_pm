@@ -20,6 +20,46 @@ export function isMonthSheet(sheetName) {
   return MONTHS.some(m => up === m || up.includes(m))
 }
 
+/**
+ * Devuelve true si la hoja corresponde al año actual (2026).
+ * Busca el año explícitamente en el nombre con patrones precisos:
+ *   - 'ABRIL 2026' (año completo separado)
+ *   - 'ABRIL26' o 'ABRIL 26' (año corto junto al mes)
+ * Retorna false si la hoja contiene explícitamente otro año.
+ * Sin año detectable → retorna false (solo se muestran hojas del año actual).
+ */
+export function isCurrentYearSheet(sheetName, currentYear = 2026) {
+  const up = (sheetName || '').toUpperCase()
+  const yearLong = String(currentYear)        // '2026'
+  const yearShort = String(currentYear).slice(2) // '26'
+
+  // Buscar todos los años de 4 dígitos (2000-2099) en el nombre
+  const years4 = up.match(/20\d{2}/g) || []
+  // Buscar todos los números de 2 dígitos que podrían ser años (separados por espacio o fin de string)
+  const years2 = up.match(/\b(\d{2})\b/g) || []
+
+  const allFoundYears = [
+    ...years4,
+    ...years2.filter(y => {
+      const n = parseInt(y)
+      return n >= 10 && n <= 99 // solo 10-99 como posible año corto
+    })
+  ]
+
+  // Si tiene años de 4 dígitos explícitos, verificar que alguno sea el actual
+  if (years4.length > 0) {
+    return years4.includes(yearLong)
+  }
+
+  // Si no hay años de 4 dígitos pero hay de 2, verificar que alguno sea el actual
+  if (years2.length > 0) {
+    return years2.includes(yearShort)
+  }
+
+  // Sin año detectable → no mostrar (solo año actual)
+  return false
+}
+
 /** Índice 0-11 del mes en MONTHS, usado para ordenar hojas. -1 si no es mes. */
 export function monthSheetIndex(sheetName) {
   const up = (sheetName || '').toUpperCase()

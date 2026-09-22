@@ -1,17 +1,19 @@
 ﻿import { useState, useMemo, useEffect, useRef } from 'react'
 import * as XLSX from 'xlsx'
 import MonthViewer from './MonthViewer'
-import { isMonthSheet, monthSheetIndex, MONTHS, parseMonthSheet, excelDateToString, dateStringToSerial, buildSubtotalEdits } from '../utils/excelParser'
+import { isMonthSheet, isCurrentYearSheet, monthSheetIndex, MONTHS, parseMonthSheet, excelDateToString, dateStringToSerial, buildSubtotalEdits } from '../utils/excelParser'
 import { patchXlsx, cloneSheet, generarResumenXlsx, ensureAbonosSheet, ensureMapeoSheet } from '../utils/xlsxPatcher'
 import { saveHandle, loadHandle, clearHandle, requestPermission } from '../utils/fileHandleStore'
 import { syncFacturas, getMonthKey } from '../utils/sheetsSync'
 import { parseAbonosFromWorkbook, getTotalAbonadoForKey, getAllAbonosForMonth, buildAbonoInsertion, ABONOS_SHEET } from '../utils/abonosStore'
+import SheetSelectorModal from './SheetSelectorModal'
 
 const SLOT_KEYS   = ['colombia']
 const SLOT_LABELS = { colombia: 'Flujo de Caja' }
 
 function emptySlot(handle, fileName, buffer, wb) {
-  const first = wb.SheetNames.find(isMonthSheet) || wb.SheetNames[0] || ''
+  const monthSheets = wb.SheetNames.filter(n => isMonthSheet(n) && isCurrentYearSheet(n))
+  const first = monthSheets.sort((a, b) => monthSheetIndex(a) - monthSheetIndex(b))[0] || wb.SheetNames[0] || ''
   return { fileHandle: handle, rawBuffer: buffer, fileName, workbook: wb,
            selectedSheet: first, pendingEdits: {}, pendingInsertions: {} }
 }
@@ -46,6 +48,8 @@ function ExcelEditor() {
   const [mapeoDescuentos, setMapeoDescuentos] = useState({})
   const [canceladoModal, setCanceladoModal] = useState(null) // { rowIdx, colIdx, onSave }
   const [nuevaSubseccionModal, setNuevaSubseccionModal] = useState(false)
+  const [sheetPickerOpen, setSheetPickerOpen] = useState(false)
+  const [sheetPickerData, setSheetPickerData] = useState(null) // { sheetNames, fileName }
   const rawBufferRef = useRef(null)
   const fileHandleRef = useRef(null)
   const abonosRef = useRef({}) // { proveedor, valorOriginal } // { sinMapeo: [{nombre, valor, fecha}], onConfirm: fn }
@@ -92,9 +96,17 @@ function ExcelEditor() {
     if (!mes) return
 
     const currentInsertions = slots.colombia?.pendingInsertions?.[selectedSheet] || []
+    const allSheetsData = {}
+    if (workbook && workbook.SheetNames) {
+      for (const name of workbook.SheetNames) {
+        if (workbook.Sheets[name]) {
+          allSheetsData[name] = XLSX.utils.sheet_to_json(workbook.Sheets[name], { header: 1, defval: '' })
+        }
+      }
+    }
 
     setSyncStatus('syncing')
-    syncFacturas(sheetRows, selectedSheet, currentInsertions).then(result => {
+    syncFacturas(sheetRows, selectedSheet, currentInsertions, allSheetsData).then(result => {
       if (result.insertions && result.insertions.length > 0) {
         setSlots(prev => ({
           ...prev,
@@ -489,7 +501,49 @@ function ExcelEditor() {
   // ──────────────────────────────────────────────
   // Abonos
   // ──────────────────────────────────────────────
-  const handleOpenAbonoModal = (proveedor, factura, valorOriginal) => {
+  const handleOpenAbonoModal = async (proveedor, factura, valorOriginal) => {
+    // Si hay cambios pendientes, guardarlos primero automáticamente
+    if (hasChanges && fileHandle && rawBuffer && activeSlot) {
+      setSyncStatus('syncing')
+      setSyncMessage('Guardando cambios pendientes...')
+      try {
+        let buf = await patchXlsx(rawBuffer, pendingEdits, pendingInsertions)
+
+        // Actualizar fórmulas de subtotales
+        const monthSheets = Object.keys({ ...pendingEdits, ...pendingInsertions })
+        const formulaEdits = {}
+        for (const sheet of monthSheets) {
+          if (!isMonthSheet(sheet)) continue
+          const wbTemp = XLSX.read(buf, { type: 'array' })
+          const rows = XLSX.utils.sheet_to_json(wbTemp.Sheets[sheet], { header: 1, defval: '' })
+          const parsed = parseMonthSheet(rows)
+          if (parsed && parsed.sectionCXP) {
+            const subEdits = buildSubtotalEdits(parsed.sectionCXP)
+            if (Object.keys(subEdits).length > 0) {
+              formulaEdits[sheet] = subEdits
+            }
+          }
+        }
+        if (Object.keys(formulaEdits).length > 0) {
+          buf = await patchXlsx(buf, formulaEdits, {})
+        }
+
+        const writable = await fileHandle.createWritable()
+        await writable.write(buf)
+        await writable.close()
+        const newWb = XLSX.read(buf, { type: 'array' })
+        setSlots(prev => ({ ...prev, [activeSlot]: {
+          ...prev[activeSlot], rawBuffer: buf, workbook: newWb,
+          pendingEdits: {}, pendingInsertions: {}
+        }}))
+        setAbonos(parseAbonosFromWorkbook(newWb))
+        setSyncStatus('synced')
+        setSyncMessage('Cambios guardados automáticamente')
+      } catch (err) {
+        setSyncStatus('error')
+        setSyncMessage('Error al guardar: ' + err.message)
+      }
+    }
     setAbonoTarget({ proveedor, factura, valorOriginal })
     setAbonosModalOpen(true)
   }
@@ -571,11 +625,26 @@ function ExcelEditor() {
     const wb     = XLSX.read(buffer, { type: 'array' })
     setAbonos(parseAbonosFromWorkbook(wb))
     setMapeoDescuentos(parseMapeoFromWorkbook(wb))
+
+    // Cargar el slot primero para tener los datos listos
     setSlots(prev => ({
       ...prev,
       [slotKey]: emptySlot(handle, file.name, buffer, wb)
     }))
     setActiveSlot(slotKey)
+
+    // Mostrar modal de selección de hoja
+    setSheetPickerData({ sheetNames: wb.SheetNames, fileName: file.name })
+    setSheetPickerOpen(true)
+  }
+
+  // ── Confirmar selección de hoja desde el modal ──
+  const handleSheetPickerConfirm = (sheetName) => {
+    if (!activeSlot) return
+    setSlots(prev => ({ ...prev, [activeSlot]: { ...prev[activeSlot], selectedSheet: sheetName } }))
+    setSheetPickerOpen(false)
+    setSheetPickerData(null)
+    if (isMonthSheet(sheetName)) setLastMonthSheet(sheetName)
   }
 
   // ──────────────────────────────────────────────
@@ -858,7 +927,7 @@ function ExcelEditor() {
       }, [])
     )
     const visibleNames = workbook.SheetNames.filter(n => !hiddenSet.has(n))
-    const monthTabs = visibleNames.filter(isMonthSheet).sort((a, b) => monthSheetIndex(a) - monthSheetIndex(b))
+    const monthTabs = visibleNames.filter(n => isMonthSheet(n) && isCurrentYearSheet(n)).sort((a, b) => monthSheetIndex(a) - monthSheetIndex(b))
     const otherTabs = visibleNames.filter(s => !isMonthSheet(s))
     return [...monthTabs, ...otherTabs]
   }, [workbook])
@@ -1138,6 +1207,14 @@ function ExcelEditor() {
         <NuevaSubseccionModal
           onConfirm={handleAddSubsection}
           onCancel={() => setNuevaSubseccionModal(false)}
+        />
+      )}
+
+      {sheetPickerOpen && sheetPickerData && (
+        <SheetSelectorModal
+          sheetNames={sheetPickerData.sheetNames}
+          fileName={sheetPickerData.fileName}
+          onSelect={handleSheetPickerConfirm}
         />
       )}
     </div>

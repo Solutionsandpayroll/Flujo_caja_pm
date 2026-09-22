@@ -15,6 +15,28 @@ export function getMonthKey(sheetName) {
   return `${year}-${month}`
 }
 
+export function getPreviousMonthKey(mes) {
+  if (!mes) return null
+  const [yearStr, monthStr] = mes.split('-')
+  let year = parseInt(yearStr)
+  let month = parseInt(monthStr)
+  month--
+  if (month < 1) {
+    month = 12
+    year--
+  }
+  return `${year}-${String(month).padStart(2, '0')}`
+}
+
+export function getSheetNameFromMonthKey(monthKey) {
+  if (!monthKey) return null
+  const [yearStr, monthStr] = monthKey.split('-')
+  const monthIdx = parseInt(monthStr) - 1
+  const year = parseInt(yearStr)
+  if (monthIdx < 0 || monthIdx > 11) return null
+  return `${MONTHS[monthIdx]} ${year}`
+}
+
 export function buildSheetsUrl(mes) {
   const base = `${APPS_SCRIPT_URL}?action=listarFacturas`
   return mes ? `${base}&mes=${mes}` : base
@@ -134,9 +156,12 @@ export function buildSyncInsertions(newFacturas, insertAfterRow) {
   }))
 }
 
-export async function syncFacturas(rows, sheetName, existingInsertions = []) {
+export async function syncFacturas(rows, sheetName, existingInsertions = [], allWorkbookSheets = {}) {
   const mes = getMonthKey(sheetName)
   if (!mes) return { inserted: 0, error: 'No se pudo determinar el mes de la hoja activa' }
+
+  const mesAnterior = getPreviousMonthKey(mes)
+  const nombreMesAnterior = getSheetNameFromMonthKey(mesAnterior)
 
   let facturasSheets = await fetchFacturasFromSheets()
   console.log(`[Sync] Google Sheets (sin filtro) devolvió ${facturasSheets.length} facturas`)
@@ -151,14 +176,32 @@ export async function syncFacturas(rows, sheetName, existingInsertions = []) {
     return { inserted: 0, message: 'No hay facturas en Google Sheets' }
   }
 
-  const filtradas = facturasSheets.filter(f => perteneceAlMes(f.fechaFact, mes))
-  const fueraDeMes = facturasSheets.length - filtradas.length
-  console.log(`[Sync] ${filtradas.length} pertenecen al mes ${mes}, ${fueraDeMes} fuera del mes (filtrado local)`)
+  // Filtrar facturas del mes actual Y del mes anterior
+  const filtradas = facturasSheets.filter(f =>
+    perteneceAlMes(f.fechaFact, mes) || perteneceAlMes(f.fechaFact, mesAnterior)
+  )
+  const fueraDeRango = facturasSheets.length - filtradas.length
+  console.log(`[Sync] ${filtradas.length} pertenecen al mes ${mes} o ${mesAnterior}, ${fueraDeRango} fuera de rango`)
   console.table(filtradas.map(f => ({ numFactura: f.numFactura, nombre: f.nombre, granTotal: f.granTotal, fechaFact: f.fechaFact, plazo: f.plazo, vencimiento: f.fechaVencimiento })))
 
+  // Obtener IDs existentes en la hoja actual
   const existingIds = getExistingFacturaIds(rows)
-  console.log(`[Sync] Facturas existentes en Excel (${TARGET_SUBSECTION}): ${existingIds.size}`)
+  console.log(`[Sync] Facturas existentes en hoja actual (${sheetName}): ${existingIds.size}`)
   if (existingIds.size > 0) console.log([...existingIds])
+
+  // Obtener IDs existentes en la hoja del mes anterior (si existe)
+  let existingIdsMesAnterior = new Set()
+  if (nombreMesAnterior && allWorkbookSheets[nombreMesAnterior]) {
+    const rowsMesAnterior = allWorkbookSheets[nombreMesAnterior]
+    existingIdsMesAnterior = getExistingFacturaIds(rowsMesAnterior)
+    console.log(`[Sync] Facturas existentes en hoja mes anterior (${nombreMesAnterior}): ${existingIdsMesAnterior.size}`)
+    if (existingIdsMesAnterior.size > 0) console.log([...existingIdsMesAnterior])
+  } else if (nombreMesAnterior) {
+    console.log(`[Sync] Hoja del mes anterior (${nombreMesAnterior}) no encontrada en el workbook`)
+  }
+
+  // Combinar IDs existentes de ambas hojas
+  const todosLosIds = new Set([...existingIds, ...existingIdsMesAnterior])
 
   const pendingIds = new Set(
     existingInsertions
@@ -178,7 +221,7 @@ export async function syncFacturas(rows, sheetName, existingInsertions = []) {
       sinNumFactura.push(f)
       continue
     }
-    if (existingIds.has(id)) {
+    if (todosLosIds.has(id)) {
       yaEnExcel.push(id)
       continue
     }
@@ -190,13 +233,13 @@ export async function syncFacturas(rows, sheetName, existingInsertions = []) {
   }
 
   console.log(`[Sync] Diagnóstico:`)
-  console.log(`  - En Sheets (total):    ${facturasSheets.length}`)
-  console.log(`  - Del mes ${mes}:       ${filtradas.length}`)
-  console.log(`  - Fuera del mes:        ${fueraDeMes}`)
-  console.log(`  - Sin numFactura:       ${sinNumFactura.length} ${sinNumFactura.length > 0 ? JSON.stringify(sinNumFactura.map(f => f.nombre)) : ''}`)
-  console.log(`  - Ya en Excel:          ${yaEnExcel.length} ${yaEnExcel.length > 0 ? JSON.stringify(yaEnExcel) : ''}`)
-  console.log(`  - Ya pendientes:        ${yaPendientes.length}`)
-  console.log(`  - NUEVAS a insertar:    ${newFacturas.length}`)
+  console.log(`  - En Sheets (total):       ${facturasSheets.length}`)
+  console.log(`  - Del mes/anterior:        ${filtradas.length}`)
+  console.log(`  - Fuera de rango:          ${fueraDeRango}`)
+  console.log(`  - Sin numFactura:          ${sinNumFactura.length} ${sinNumFactura.length > 0 ? JSON.stringify(sinNumFactura.map(f => f.nombre)) : ''}`)
+  console.log(`  - Ya en Excel (ambas hojas): ${yaEnExcel.length} ${yaEnExcel.length > 0 ? JSON.stringify(yaEnExcel) : ''}`)
+  console.log(`  - Ya pendientes:           ${yaPendientes.length}`)
+  console.log(`  - NUEVAS a insertar:       ${newFacturas.length}`)
   if (newFacturas.length > 0) console.table(newFacturas.map(f => ({ numFactura: f.numFactura, nombre: f.nombre, granTotal: f.granTotal, vencimiento: f.fechaVencimiento })))
 
   if (newFacturas.length === 0) {
